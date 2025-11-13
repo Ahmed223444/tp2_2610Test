@@ -3,17 +3,15 @@
 
 #include "server.h"
 
-// Thread du serveur de sauvegarde
-void* backup_server_thread(void* arg);
+typedef struct {
+    Video videos[MAX_VIDEOS];
+    int count;
+} BackupServer;
 
-// Sauvegarde et restauration
-int sauvegarder_serveur(ServerMonitor* serveur);
-int restaurer_serveur(ServerMonitor* serveur);
+void initBackupServer(BackupServer* b);
+void destroyBackupServer(BackupServer* b);
 
-// Journalisation des vidéos (persistance)
-int persist_video_to_journal(const Video *v);             // Ajoute une vidéo au journal
-int mark_video_processed_in_journal(int video_id);         // Marque une vidéo comme traitée
-int load_videos_from_journal(ServerMonitor* mainServer);   // Recharge les vidéos depuis le journal
-int compact_journal(void);                                 // Optionnel : nettoie le journal
+void backupVideos(BackupServer* backup, ServerMonitor* mainServer);
+void restoreVideos(BackupServer* backup, ServerMonitor* mainServer);
 
 #endif
