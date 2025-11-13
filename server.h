@@ -3,24 +3,32 @@
 
 #include <pthread.h>
 
+#define MAX_VIDEOS 100
+#define CONTENT_SIZE 256
+
 typedef struct {
     int id;
-    char titre[128];
-    int duree;
+    char content[CONTENT_SIZE];
+    int duration;
 } Video;
 
 typedef struct {
-    Video videos[100];
-    int nb_videos;
-    int panne;
+    Video videos[MAX_VIDEOS];
+    int in;
+    int out;
+    int count;
     pthread_mutex_t mutex;
-    pthread_cond_t cond;
+    pthread_cond_t notEmpty;
+    pthread_cond_t notFull;
 } ServerMonitor;
 
-void init_server(ServerMonitor* serveur);
-void* server_thread(void* arg);
-void ajouter_video(ServerMonitor* serveur, const Video* v);
-void simuler_panne(ServerMonitor* serveur);
-void restaurer_serveur_principal(ServerMonitor* serveur);
+// Initialisation
+void initServer(ServerMonitor* server);
+void destroyServer(ServerMonitor* server);
+
+// Gestion du flux
+void sendVideo(ServerMonitor* server, Video video);
+Video getVideo(ServerMonitor* server);
+void completeVideo(ServerMonitor* server, int index);
 
 #endif
