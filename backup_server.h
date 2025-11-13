@@ -1,26 +1,19 @@
 #ifndef BACKUP_SERVER_H
 #define BACKUP_SERVER_H
 
-#include <stdbool.h>
 #include "server.h"
 
-#define BACKUP_MAX_VIDEOS 50
+// Thread du serveur de sauvegarde
+void* backup_server_thread(void* arg);
 
-typedef struct {
-    Video buffer[BACKUP_MAX_VIDEOS];
-    Video processingBuffer[BACKUP_MAX_VIDEOS]; // Nouveau: sauvegarde des vidéos en cours
-    int count;
-    int processingCount; // Nouveau: compte des vidéos en cours de traitement
-    pthread_mutex_t mutex;
-} BackupServer;
+// Sauvegarde et restauration
+int sauvegarder_serveur(ServerMonitor* serveur);
+int restaurer_serveur(ServerMonitor* serveur);
 
-void initBackupServer(BackupServer* backup);
-void destroyBackupServer(BackupServer* backup);
-
-void backupVideos(BackupServer* backup, ServerMonitor* mainServer);
-void restoreVideos(BackupServer* backup, ServerMonitor* mainServer);
-
-// Nouvelle fonction pour sauvegarder les vidéos en cours de traitement
-void backupProcessingVideos(BackupServer* backup, Video* processingVideos, int count);
+// Journalisation des vidéos (persistance)
+int persist_video_to_journal(const Video *v);             // Ajoute une vidéo au journal
+int mark_video_processed_in_journal(int video_id);         // Marque une vidéo comme traitée
+int load_videos_from_journal(ServerMonitor* mainServer);   // Recharge les vidéos depuis le journal
+int compact_journal(void);                                 // Optionnel : nettoie le journal
 
 #endif
