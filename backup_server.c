@@ -1,110 +1,38 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <pthread.h>
 #include "backup_server.h"
+#include <stdio.h>
+#include <string.h>
 
-#define JOURNAL_FILE "videos_journal.txt"
-
-pthread_mutex_t backup_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-void* backup_server_thread(void* arg) {
-    ServerMonitor* serveur = (ServerMonitor*)arg;
-    while (1) {
-        pthread_mutex_lock(&serveur->mutex);
-        if (serveur->panne) {
-            pthread_mutex_unlock(&serveur->mutex);
-            sleep(1);
-            continue;
-        }
-        pthread_mutex_unlock(&serveur->mutex);
-        sleep(1);
-    }
-    return NULL;
+void initBackupServer(BackupServer* b) {
+    b->count = 0;
 }
 
-int sauvegarder_serveur(ServerMonitor* serveur) {
-    pthread_mutex_lock(&backup_mutex);
-    FILE* f = fopen(JOURNAL_FILE, "a");
-    if (!f) {
-        perror("[BACKUP] Erreur ouverture journal");
-        pthread_mutex_unlock(&backup_mutex);
-        return -1;
-    }
-
-    for (int i = 0; i < serveur->nb_videos; i++) {
-        Video* v = &serveur->videos[i];
-        fprintf(f, "ADD %d %s %d\n", v->id, v->titre, v->duree);
-    }
-
-    fclose(f);
-    pthread_mutex_unlock(&backup_mutex);
-    printf("[BACKUP] Sauvegarde terminée.\n");
-    return 0;
+void destroyBackupServer(BackupServer* b) {
+    b->count = 0;
 }
 
-int restaurer_serveur(ServerMonitor* serveur) {
-    pthread_mutex_lock(&backup_mutex);
-    FILE* f = fopen(JOURNAL_FILE, "r");
-    if (!f) {
-        perror("[BACKUP] Aucun fichier de sauvegarde trouvé");
-        pthread_mutex_unlock(&backup_mutex);
-        return -1;
-    }
+void backupVideos(BackupServer* backup, ServerMonitor* mainServer) {
+    pthread_mutex_lock(&mainServer->mutex);
 
-    serveur->nb_videos = 0;
-    char action[8], titre[128];
-    int id, duree;
+    backup->count = mainServer->count;
+    for (int i = 0; i < mainServer->count; i++)
+        backup->videos[i] = mainServer->videos[(mainServer->out + i) % MAX_VIDEOS];
 
-    while (fscanf(f, "%s %d %s %d", action, &id, titre, &duree) == 4) {
-        if (strcmp(action, "ADD") == 0) {
-            Video v = { .id = id, .duree = duree };
-            strncpy(v.titre, titre, sizeof(v.titre));
-            serveur->videos[serveur->nb_videos++] = v;
-        }
-    }
+    pthread_mutex_unlock(&mainServer->mutex);
 
-    fclose(f);
-    pthread_mutex_unlock(&backup_mutex);
-    printf("[BACKUP] Restauration terminée (%d vidéos restaurées)\n", serveur->nb_videos);
-    return 0;
+    printf("[BACKUP] Sauvegarde terminée, confirmation envoyée au serveur principal.\n");
 }
 
-// Journalisation bas-niveau
-int persist_video_to_journal(const Video *v) {
-    pthread_mutex_lock(&backup_mutex);
-    FILE* f = fopen(JOURNAL_FILE, "a");
-    if (!f) {
-        perror("persist_video_to_journal");
-        pthread_mutex_unlock(&backup_mutex);
-        return -1;
-    }
-    fprintf(f, "ADD %d %s %d\n", v->id, v->titre, v->duree);
-    fclose(f);
-    pthread_mutex_unlock(&backup_mutex);
-    return 0;
-}
+void restoreVideos(BackupServer* backup, ServerMonitor* mainServer) {
+    pthread_mutex_lock(&mainServer->mutex);
 
-int mark_video_processed_in_journal(int video_id) {
-    pthread_mutex_lock(&backup_mutex);
-    FILE* f = fopen(JOURNAL_FILE, "a");
-    if (!f) {
-        perror("mark_video_processed_in_journal");
-        pthread_mutex_unlock(&backup_mutex);
-        return -1;
-    }
-    fprintf(f, "DEL %d\n", video_id);
-    fclose(f);
-    pthread_mutex_unlock(&backup_mutex);
-    return 0;
-}
+    mainServer->in = 0;
+    mainServer->out = 0;
+    mainServer->count = backup->count;
 
-int load_videos_from_journal(ServerMonitor* serveur) {
-    return restaurer_serveur(serveur);
-}
+    for (int i = 0; i < backup->count; i++)
+        mainServer->videos[i] = backup->videos[i];
 
-int compact_journal(void) {
-    // Optionnel : pas nécessaire pour la version simple
-    return 0;
+    pthread_mutex_unlock(&mainServer->mutex);
+
+    printf("[BACKUP] Restauration complète (%d vidéos restaurées).\n", backup->count);
 }
