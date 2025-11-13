@@ -1,90 +1,110 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <pthread.h>
 #include "backup_server.h"
-#include "server.h"
 
-static unsigned long hashVideo(const Video* video) {
-    unsigned long hash = 0;
-    for (int i = 0; i < CONTENT_SIZE && video->content[i] != '\0'; i++) {
-        hash += video->content[i];
+#define JOURNAL_FILE "videos_journal.txt"
+
+pthread_mutex_t backup_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+void* backup_server_thread(void* arg) {
+    ServerMonitor* serveur = (ServerMonitor*)arg;
+    while (1) {
+        pthread_mutex_lock(&serveur->mutex);
+        if (serveur->panne) {
+            pthread_mutex_unlock(&serveur->mutex);
+            sleep(1);
+            continue;
+        }
+        pthread_mutex_unlock(&serveur->mutex);
+        sleep(1);
     }
-    hash += video->id;
-    hash += video->duration;
-    return hash;
+    return NULL;
 }
 
-void initBackupServer(BackupServer* backup) {
-    backup->count = 0;
-    backup->processingCount = 0;
-    pthread_mutex_init(&backup->mutex, NULL);
+int sauvegarder_serveur(ServerMonitor* serveur) {
+    pthread_mutex_lock(&backup_mutex);
+    FILE* f = fopen(JOURNAL_FILE, "a");
+    if (!f) {
+        perror("[BACKUP] Erreur ouverture journal");
+        pthread_mutex_unlock(&backup_mutex);
+        return -1;
+    }
+
+    for (int i = 0; i < serveur->nb_videos; i++) {
+        Video* v = &serveur->videos[i];
+        fprintf(f, "ADD %d %s %d\n", v->id, v->titre, v->duree);
+    }
+
+    fclose(f);
+    pthread_mutex_unlock(&backup_mutex);
+    printf("[BACKUP] Sauvegarde terminée.\n");
+    return 0;
 }
 
-void destroyBackupServer(BackupServer* backup) {
-    pthread_mutex_destroy(&backup->mutex);
-}
+int restaurer_serveur(ServerMonitor* serveur) {
+    pthread_mutex_lock(&backup_mutex);
+    FILE* f = fopen(JOURNAL_FILE, "r");
+    if (!f) {
+        perror("[BACKUP] Aucun fichier de sauvegarde trouvé");
+        pthread_mutex_unlock(&backup_mutex);
+        return -1;
+    }
 
-void backupVideos(BackupServer* backup, ServerMonitor* mainServer) {
-    pthread_mutex_lock(&mainServer->mutex);
-    pthread_mutex_lock(&backup->mutex);
+    serveur->nb_videos = 0;
+    char action[8], titre[128];
+    int id, duree;
 
-    // Sauvegarde des vidéos normales
-    backup->count = mainServer->count;
-    for (int i = 0; i < mainServer->count; i++) {
-        backup->buffer[i] = mainServer->buffer[i];
-        
-        unsigned long hashOriginal = hashVideo(&mainServer->buffer[i]);
-        unsigned long hashCopy = hashVideo(&backup->buffer[i]);
-        
-        if (hashOriginal != hashCopy) {
-            fprintf(stderr, "[BACKUP] Erreur de copie sur la vidéo %d\n", mainServer->buffer[i].id);
+    while (fscanf(f, "%s %d %s %d", action, &id, titre, &duree) == 4) {
+        if (strcmp(action, "ADD") == 0) {
+            Video v = { .id = id, .duree = duree };
+            strncpy(v.titre, titre, sizeof(v.titre));
+            serveur->videos[serveur->nb_videos++] = v;
         }
     }
 
-    // Nouveau: sauvegarde des vidéos en cours de traitement
-    backup->processingCount = 0;
-    for (int i = 0; i < MAX_VIDEOS; i++) {
-        if (mainServer->beingProcessed[i]) {
-            backup->processingBuffer[backup->processingCount] = mainServer->buffer[i];
-            backup->processingCount++;
-        }
-    }
-
-    pthread_mutex_unlock(&backup->mutex);
-    pthread_mutex_unlock(&mainServer->mutex);
-
-    printf("[BACKUP] Sauvegarde terminée. %d vidéos normales, %d vidéos en cours de traitement.\n", 
-           backup->count, backup->processingCount);
+    fclose(f);
+    pthread_mutex_unlock(&backup_mutex);
+    printf("[BACKUP] Restauration terminée (%d vidéos restaurées)\n", serveur->nb_videos);
+    return 0;
 }
 
-void restoreVideos(BackupServer* backup, ServerMonitor* mainServer) {
-    pthread_mutex_lock(&mainServer->mutex);
-    pthread_mutex_lock(&backup->mutex);
-
-    // Restauration des vidéos normales
-    mainServer->count = backup->count;
-    mainServer->in = backup->count % MAX_VIDEOS;
-    mainServer->out = 0;
-
-    for (int i = 0; i < backup->count; i++) {
-        mainServer->buffer[i] = backup->buffer[i];
-        mainServer->beingProcessed[i] = 0; // Réinitialiser l'état de traitement
+// Journalisation bas-niveau
+int persist_video_to_journal(const Video *v) {
+    pthread_mutex_lock(&backup_mutex);
+    FILE* f = fopen(JOURNAL_FILE, "a");
+    if (!f) {
+        perror("persist_video_to_journal");
+        pthread_mutex_unlock(&backup_mutex);
+        return -1;
     }
+    fprintf(f, "ADD %d %s %d\n", v->id, v->titre, v->duree);
+    fclose(f);
+    pthread_mutex_unlock(&backup_mutex);
+    return 0;
+}
 
-    // Nouveau: restauration des vidéos qui étaient en cours de traitement
-    // Elles sont remises au début du buffer pour être retraitées
-    int processingStart = mainServer->in;
-    for (int i = 0; i < backup->processingCount; i++) {
-        if (mainServer->count < MAX_VIDEOS) {
-            mainServer->buffer[mainServer->in] = backup->processingBuffer[i];
-            mainServer->in = (mainServer->in + 1) % MAX_VIDEOS;
-            mainServer->count++;
-        }
+int mark_video_processed_in_journal(int video_id) {
+    pthread_mutex_lock(&backup_mutex);
+    FILE* f = fopen(JOURNAL_FILE, "a");
+    if (!f) {
+        perror("mark_video_processed_in_journal");
+        pthread_mutex_unlock(&backup_mutex);
+        return -1;
     }
+    fprintf(f, "DEL %d\n", video_id);
+    fclose(f);
+    pthread_mutex_unlock(&backup_mutex);
+    return 0;
+}
 
-    pthread_mutex_unlock(&backup->mutex);
-    pthread_mutex_unlock(&mainServer->mutex);
+int load_videos_from_journal(ServerMonitor* serveur) {
+    return restaurer_serveur(serveur);
+}
 
-    printf("[BACKUP] Restauration terminée. %d vidéos normales + %d vidéos à retraiter.\n", 
-           backup->count, backup->processingCount);
+int compact_journal(void) {
+    // Optionnel : pas nécessaire pour la version simple
+    return 0;
 }
